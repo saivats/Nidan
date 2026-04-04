@@ -1,0 +1,57 @@
+name: nidan
+version: "1.0.0"
+description: "Nidan — Medical image active learning environment. Agent selects which X-rays/MRIs to annotate to maximize diagnostic AUC with minimal labels."
+tags:
+  - healthcare
+  - medical-imaging
+  - active-learning
+  - radiology
+
+tasks:
+  - id: task1
+    name: "Binary Pneumonia Detection"
+    difficulty: easy
+    max_steps: 40
+    success_threshold: 0.82
+    classes:
+      - normal
+      - pneumonia
+    pool_size: 200
+    budget: 40
+
+  - id: task2
+    name: "Multi-class Chest Conditions"
+    difficulty: medium
+    max_steps: 30
+    success_threshold: 0.75
+    classes:
+      - normal
+      - pneumonia
+      - covid
+      - tuberculosis
+    pool_size: 400
+    budget: 30
+
+  - id: task3
+    name: "Rare Pathology Detection"
+    difficulty: hard
+    max_steps: 15
+    success_threshold: 0.60
+    classes:
+      - normal
+      - nodule
+      - effusion
+      - pneumothorax
+    pool_size: 600
+    budget: 15
+
+observation_space: "Structured JSON with AUC, budget, candidate images with uncertainty/diversity scores"
+action_space: "Select one image_id from candidate list per step"
+
+server:
+  host: "0.0.0.0"
+  port: 7860
+
+agent:
+  max_total_reward_per_step: 0.3
+  success_score_threshold: 0.5
