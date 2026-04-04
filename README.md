@@ -1,3 +1,12 @@
+---
+title: Nidan
+emoji: 🩻
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # Nidan
 
 **Medical Image Active Learning Environment** — Scaler Meta-PyTorch Hackathon Round 1
