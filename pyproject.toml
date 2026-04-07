@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-nidan"
+version = "0.1.0"
+description = "Medical image active learning environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "scikit-learn>=1.4.0",
+    "numpy>=1.26.0",
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    "datasets>=2.18.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
+    "pillow>=10.0.0",
+    "requests>=2.32.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+server = "nidan.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["nidan", "nidan.server"]
+package-dir = { "nidan" = ".", "nidan.server" = "server" }
+
+[tool.setuptools.package-data]
+nidan = ["**/*.yaml", "**/*.yml", "**/*.md"]
