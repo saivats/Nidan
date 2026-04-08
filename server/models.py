@@ -48,7 +48,7 @@ class Reward(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    task_id: str = Field(pattern="^task[123]$")
+    task_id: str = Field(default="task1", pattern="^task[123]$")
 
 
 class StepResponse(BaseModel):

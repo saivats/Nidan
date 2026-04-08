@@ -204,9 +204,10 @@ async def mcp_endpoint(request: Request):
 
 
 @app.post("/reset")
-async def reset(request_body: ResetRequest):
+async def reset(request_body: Optional[ResetRequest] = None):
     try:
-        observation = env.reset(request_body.task_id)
+        task_id = request_body.task_id if request_body and hasattr(request_body, 'task_id') else "task1"
+        observation = env.reset(task_id)
         return observation.model_dump()
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=f"Unknown task_id: {request_body.task_id}") from exc
