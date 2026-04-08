@@ -93,7 +93,7 @@ Each task has a deterministic, reproducible grader returning a score in [0.0, 1.
 | Task | Grading Formula |
 |------|----------------|
 | task1 | `min(auc / 0.82, 1.0) * efficiency_bonus` |
-| task2 | `min(macro_auc / 0.80, 1.0)` |
+| task2 | `min(macro_auc / 0.75, 1.0) * efficiency_bonus` |
 | task3 | `0.5 * min(rare_found / 3, 1.0) + 0.5 * min(auc / 0.70, 1.0)` |
 
 ## Baseline Performance Scores

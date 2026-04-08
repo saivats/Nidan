@@ -243,9 +243,10 @@ async def get_state():
 
 @app.post("/close")
 async def close_env():
-    try:
-        env.reset("task1")
-        return {"status": "closed"}
-    except Exception:
-        return {"status": "closed"}
+    env._state = None
+    env._episode_history = []
+    env._model = None
+    env._rare_positives_found = 0
+    env._last_annotation_result = None
+    return {"status": "closed"}
 
