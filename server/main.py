@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from server.env import Nidan
 from server.models import Action, ResetRequest, StepResponse
@@ -204,13 +205,29 @@ async def mcp_endpoint(request: Request):
 
 
 @app.post("/reset")
-async def reset(request_body: Optional[ResetRequest] = None):
+async def reset(request: Request):
+    task_id = "task1"
     try:
-        task_id = request_body.task_id if request_body and hasattr(request_body, 'task_id') else "task1"
+        raw_body = await request.body()
+        if raw_body:
+            try:
+                payload = await request.json()
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+
+            try:
+                request_body = ResetRequest.model_validate(payload)
+            except ValidationError as exc:
+                raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+            task_id = request_body.task_id
+
         observation = env.reset(task_id)
         return observation.model_dump()
     except KeyError as exc:
-        raise HTTPException(status_code=400, detail=f"Unknown task_id: {request_body.task_id}") from exc
+        raise HTTPException(status_code=400, detail=f"Unknown task_id: {task_id}") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
