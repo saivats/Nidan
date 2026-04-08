@@ -6,7 +6,7 @@ colorTo: green
 sdk: docker
 pinned: false
 tags:
-  - openenv
+- openenv
 ---
 
 # Nidan — Medical Image Active Learning Environment
