@@ -239,3 +239,14 @@ async def get_state():
         return JSONResponse(content=env.state())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/close")
+async def close_env():
+    env._state = None
+    env._episode_history = []
+    env._model = None
+    env._rare_positives_found = 0
+    env._last_annotation_result = None
+    return {"status": "closed"}
+

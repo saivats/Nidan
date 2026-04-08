@@ -66,7 +66,7 @@ class Nidan:
         pool_emb, pool_labels, val_emb, val_labels = load_or_extract_embeddings(task_id)
 
         actual_pool_size = min(config.pool_size, pool_emb.shape[0])
-        rng = np.random.RandomState()
+        rng = np.random.RandomState(42)
         perm = rng.permutation(pool_emb.shape[0])[:actual_pool_size]
 
         pool_embeddings = pool_emb[perm].astype(np.float32)
@@ -274,9 +274,19 @@ class Nidan:
             diversity_scores = np.clip(diversity_scores, 0.0, 1.0)
             uncertainty_scores = np.clip(uncertainty_scores, 0.0, 1.0)
 
-            combined_scores = 0.5 * uncertainty_scores + 0.5 * diversity_scores
-            top_k = min(CANDIDATES_PER_STEP, len(unlabeled_ids))
-            top_indices = np.argsort(combined_scores)[-top_k:][::-1]
+            prefilter_k = min(30, len(unlabeled_ids))
+            top_uncertain_indices = np.argsort(uncertainty_scores)[-prefilter_k:][::-1]
+
+            top_k = min(CANDIDATES_PER_STEP, len(top_uncertain_indices))
+            selected_indices: List[int] = []
+            remaining = list(top_uncertain_indices)
+
+            selected_indices.append(remaining.pop(0))
+
+            while len(selected_indices) < top_k and remaining:
+                best_idx = max(remaining, key=lambda i: diversity_scores[i])
+                remaining.remove(best_idx)
+                selected_indices.append(best_idx)
 
             candidates = [
                 CandidateImage(
@@ -286,7 +296,7 @@ class Nidan:
                     modality=state.config.modality,
                     body_part=state.config.body_part,
                 )
-                for i in top_indices
+                for i in selected_indices
             ]
 
             mean_uncertainty = float(np.mean(uncertainty_scores))

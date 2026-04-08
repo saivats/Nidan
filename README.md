@@ -38,9 +38,9 @@ The agent submits a single action per step:
 | `reasoning` | string | No | Optional explanation for selection |
 
 Example action:
-`json
+```json
 {"selected_image_id": "task1_img_0042", "reasoning": "Highest uncertainty + diversity"}
-`
+```
 
 ## Observation Space
 
@@ -75,12 +75,12 @@ Each candidate image includes:
 
 Each step returns a shaped reward providing incremental feedback:
 
-`
+```
 delta_auc           = auc_after - auc_before
 redundancy_penalty  = 0.05 * max(0, cosine_sim(new, mean_labeled) - 0.85)
 rare_case_bonus     = 0.15 if label is rare class, else 0.0
 step_reward         = clip(delta_auc - redundancy_penalty + rare_case_bonus, -0.1, 0.3)
-`
+```
 
 - **Incremental progress**: rewards every AUC improvement
 - **Penalizes redundancy**: selecting near-duplicates of labeled images
@@ -93,7 +93,7 @@ Each task has a deterministic, reproducible grader returning a score in [0.0, 1.
 | Task | Grading Formula |
 |------|----------------|
 | task1 | `min(auc / 0.82, 1.0) * efficiency_bonus` |
-| task2 | `min(macro_auc / 0.80, 1.0)` |
+| task2 | `min(macro_auc / 0.75, 1.0) * efficiency_bonus` |
 | task3 | `0.5 * min(rare_found / 3, 1.0) + 0.5 * min(auc / 0.70, 1.0)` |
 
 ## Baseline Performance Scores
@@ -112,34 +112,34 @@ Scores from running the inference agent with `gpt-4o-mini` via HuggingFace route
 ## Quick Start
 
 ### Docker (recommended)
-`ash
+```bash
 docker build -t nidan .
 docker run -p 7860:7860 nidan
-`
+```
 
 ### Without Docker
-`ash
+```bash
 pip install -r requirements.txt
 python server/data/feature_extractor.py
 uvicorn server.main:app --host 0.0.0.0 --port 7860
-`
+```
 
 ### Test the API
-`ash
+```bash
 curl http://localhost:7860/health
 curl -X POST http://localhost:7860/reset -H "Content-Type: application/json" -d '{"task_id": "task1"}'
-`
+```
 
 ## Running the Inference Agent
 
-`ash
+```bash
 export HF_TOKEN=your_huggingface_token
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=gpt-4o-mini
 export ENV_BASE_URL=http://localhost:7860
 
 python inference.py
-`
+```
 
 ## API Endpoints
 
@@ -151,6 +151,7 @@ python inference.py
 | POST | `/reset` | Start a new task episode |
 | POST | `/step` | Select an image to annotate |
 | GET | `/state` | Current environment state snapshot |
+| POST | `/close` | Close the current episode |
 
 ## Project Structure
 

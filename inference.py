@@ -91,6 +91,13 @@ def post_step(http_client: httpx.Client, image_id: str) -> Dict[str, Any]:
     return response.json()
 
 
+def post_close(http_client: httpx.Client) -> None:
+    try:
+        http_client.post(f"{ENV_BASE_URL}/close", timeout=10.0)
+    except Exception:
+        pass
+
+
 def run_task(
     task_id: str,
     llm_client: OpenAI,
@@ -100,63 +107,67 @@ def run_task(
 
     print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
-    observation = post_reset(http_client, task_id)
-
     rewards_list: List[float] = []
     done = False
     step_count = 0
+    step_result: Dict[str, Any] = {}
     last_error: Optional[str] = None
 
-    while not done and step_count < max_steps:
-        candidates = observation.get("candidate_images", [])
-        valid_ids = [c["image_id"] for c in candidates]
+    try:
+        observation = post_reset(http_client, task_id)
 
-        if not valid_ids:
-            break
+        while not done and step_count < max_steps:
+            candidates = observation.get("candidate_images", [])
+            valid_ids = [c["image_id"] for c in candidates]
 
-        selected_id = select_image_via_llm(llm_client, observation, valid_ids)
+            if not valid_ids:
+                break
 
-        if not selected_id:
-            break
+            selected_id = select_image_via_llm(llm_client, observation, valid_ids)
 
-        try:
-            step_result = post_step(http_client, selected_id)
-            last_error = None
-        except Exception as exc:
-            last_error = str(exc)
+            if not selected_id:
+                break
+
+            try:
+                step_result = post_step(http_client, selected_id)
+                last_error = None
+            except Exception as exc:
+                last_error = str(exc)
+                step_count += 1
+                print(
+                    f"[STEP] step={step_count} action={selected_id} reward=0.00 done=false error={last_error}",
+                    flush=True,
+                )
+                continue
+
+            reward_data = step_result.get("reward", {})
+            step_reward = reward_data.get("step_reward", 0.0)
+            rewards_list.append(step_reward)
+            done = step_result.get("done", False)
+            observation = step_result.get("observation", observation)
             step_count += 1
+
+            error_str = "null" if last_error is None else last_error
+            done_str = "true" if done else "false"
+
             print(
-                f"[STEP] step={step_count} action={selected_id} reward=0.00 done=false error={last_error}",
+                f"[STEP] step={step_count} action={selected_id} reward={step_reward:.2f} done={done_str} error={error_str}",
                 flush=True,
             )
-            continue
+    finally:
+        info = step_result.get("info", {}) if step_count > 0 else {}
+        final_score = info.get("final_score", 0.0)
+        success = final_score >= 0.5
 
-        reward_data = step_result.get("reward", {})
-        step_reward = reward_data.get("step_reward", 0.0)
-        rewards_list.append(step_reward)
-        done = step_result.get("done", False)
-        observation = step_result.get("observation", observation)
-        step_count += 1
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
+        success_str = "true" if success else "false"
 
-        error_str = "null" if last_error is None else last_error
-        done_str = "true" if done else "false"
+        post_close(http_client)
 
         print(
-            f"[STEP] step={step_count} action={selected_id} reward={step_reward:.2f} done={done_str} error={error_str}",
+            f"[END] success={success_str} steps={step_count} rewards={rewards_str}",
             flush=True,
         )
-
-    info = step_result.get("info", {}) if step_count > 0 else {}
-    final_score = info.get("final_score", 0.0)
-    success = final_score >= 0.5
-
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
-    success_str = "true" if success else "false"
-
-    print(
-        f"[END] success={success_str} steps={step_count} rewards={rewards_str}",
-        flush=True,
-    )
 
     return {
         "task_id": task_id,

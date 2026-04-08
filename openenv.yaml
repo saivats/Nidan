@@ -48,6 +48,12 @@ tasks:
 observation_space: "Structured JSON with AUC, budget, candidate images with uncertainty/diversity scores"
 action_space: "Select one image_id from candidate list per step"
 
+interface:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  close: POST /close
+
 server:
   host: "0.0.0.0"
   port: 7860
@@ -55,3 +61,4 @@ server:
 agent:
   max_total_reward_per_step: 0.3
   success_score_threshold: 0.5
+
