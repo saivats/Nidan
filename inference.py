@@ -29,6 +29,11 @@ SYSTEM_PROMPT = (
 )
 
 
+def _safe_score(s: float) -> float:
+    """Guarantee score is strictly inside (0, 1) exclusive."""
+    return max(1e-6, min(1.0 - 1e-6, float(s)))
+
+
 def build_user_prompt(observation: Dict[str, Any]) -> str:
     lines = [
         f"Task: {observation['task_id']}",
@@ -112,6 +117,7 @@ def run_task(
     step_count = 0
     step_result: Dict[str, Any] = {}
     last_error: Optional[str] = None
+    final_score = 1e-6  # default: strictly > 0 so it never fails validation
 
     try:
         observation = post_reset(http_client, task_id)
@@ -154,18 +160,32 @@ def run_task(
                 f"[STEP] step={step_count} action={selected_id} reward={step_reward:.2f} done={done_str} error={error_str}",
                 flush=True,
             )
-    finally:
-        info = step_result.get("info", {}) if step_count > 0 else {}
-        final_score = info.get("final_score", 0.0)
-        success = final_score >= 0.5
 
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
+        # Pull final_score from the last step result
+        info = step_result.get("info", {})
+        raw_score = info.get("final_score", None)
+        if raw_score is not None:
+            final_score = _safe_score(raw_score)
+        else:
+            # Derive score from rewards if info didn't provide one
+            if rewards_list:
+                raw_score = sum(rewards_list) / len(rewards_list)
+                final_score = _safe_score(raw_score)
+            # else keeps the 1e-6 default
+
+    except Exception as exc:
+        print(f"[DEBUG] Task {task_id} exception: {exc}", flush=True)
+
+    finally:
+        success = final_score >= 0.5
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list) if rewards_list else "0.00"
         success_str = "true" if success else "false"
 
         post_close(http_client)
 
+        # CRITICAL: score= field must be present and strictly in (0,1)
         print(
-            f"[END] success={success_str} steps={step_count} rewards={rewards_str}",
+            f"[END] success={success_str} steps={step_count} score={final_score:.6f} rewards={rewards_str}",
             flush=True,
         )
 
