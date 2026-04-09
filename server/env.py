@@ -51,6 +51,10 @@ CANDIDATES_PER_STEP = 10
 LR_MAX_ITER = 1000
 SEED_PER_CLASS = 2
 
+# Safety clamp: strictly inside (0, 1) exclusive
+def _safe_score(s: float) -> float:
+    return max(1e-6, min(1.0 - 1e-6, float(s)))
+
 
 class Nidan:
     def __init__(self) -> None:
@@ -163,23 +167,26 @@ class Nidan:
             cumulative_auc=new_auc,
         )
 
+        # ALWAYS compute and include final_score in every step's info,
+        # not just when done=True. The validator reads this field from
+        # every step response and rejects 0.0 or 1.0.
+        final_state_dict = self.state()
+        final_state_dict["rare_positives_found"] = self._rare_positives_found
+        grader = GRADER_REGISTRY[state.config.task_id]
+        final_score = _safe_score(grader.grade(final_state_dict))
+
         info: Dict[str, Any] = {
             "revealed_label": revealed_label,
             "budget_used": state.budget_used,
             "budget_remaining": state.config.budget - state.budget_used,
             "rare_positives_found": self._rare_positives_found,
             "success_threshold": state.config.success_threshold,
+            "final_score": final_score,  # always present, always strictly in (0,1)
             "done_reason": (
                 "budget_exhausted" if budget_exhausted
                 else ("auc_threshold_reached" if auc_reached else "in_progress")
             ),
         }
-
-        if done:
-            final_state_dict = self.state()
-            final_state_dict["rare_positives_found"] = self._rare_positives_found
-            grader = GRADER_REGISTRY[state.config.task_id]
-            info["final_score"] = grader.grade(final_state_dict)
 
         observation = self._build_observation(state)
         return observation, reward, done, info
