@@ -215,12 +215,18 @@ async def reset(request: Request):
             except Exception as exc:
                 raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
-            try:
-                request_body = ResetRequest.model_validate(payload)
-            except ValidationError as exc:
-                raise HTTPException(status_code=422, detail=exc.errors()) from exc
+            # Accept no-op payloads used by some validators.
+            if payload in (None, {}):
+                payload = {}
+            elif not isinstance(payload, dict):
+                payload = {}
 
-            task_id = request_body.task_id
+            if "task_id" in payload:
+                try:
+                    request_body = ResetRequest.model_validate(payload)
+                except ValidationError as exc:
+                    raise HTTPException(status_code=422, detail=exc.errors()) from exc
+                task_id = request_body.task_id
 
         observation = env.reset(task_id)
         return observation.model_dump()
