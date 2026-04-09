@@ -24,5 +24,6 @@ class Task2Grader(BaseGrader):
         else:
             score = base_score
 
-        return self._clamp(score)
+        # Must be strictly between 0 and 1 (exclusive)
+        return max(1e-6, min(score, 1.0 - 1e-6))
 

@@ -10,5 +10,5 @@ class BaseGrader(ABC):
         """Return a score strictly within (0.0, 1.0)."""
 
     def _clamp(self, value: float) -> float:
-        eps = 1e-6
-        return max(eps, min(1.0 - eps, float(value)))
+        return max(1e-6, min(1.0 - 1e-6, float(value)))
+
