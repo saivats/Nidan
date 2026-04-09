@@ -20,5 +20,5 @@ class Task3Grader(BaseGrader):
         )
         auc_score = min(final_auc / TASK3_AUC_DENOMINATOR, 1.0) * AUC_WEIGHT
         score = positive_case_score + auc_score
-        # Must be strictly between 0 and 1 (exclusive)
-        return max(1e-6, min(score, 1.0 - 1e-6))
+
+        return self._clamp(score)
