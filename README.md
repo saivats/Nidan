@@ -88,7 +88,7 @@ step_reward         = clip(delta_auc - redundancy_penalty + rare_case_bonus, -0.
 
 ## Grading
 
-Each task has a deterministic, reproducible grader returning a score in [0.0, 1.0]:
+Each task has a deterministic, reproducible grader returning a score in (0.0, 1.0) exclusive:
 
 | Task | Grading Formula |
 |------|----------------|

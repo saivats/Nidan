@@ -10,4 +10,4 @@ class BaseGrader(ABC):
         """Return a score strictly between 0.0 and 1.0 (exclusive)."""
 
     def _clamp(self, value: float) -> float:
-        return max(1e-6, min(1.0 - 1e-6, float(value)))
+        return max(0.001, min(0.999, float(value)))
