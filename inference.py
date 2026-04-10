@@ -30,7 +30,7 @@ SYSTEM_PROMPT = (
 
 
 def _safe_score(s: float) -> float:
-    return max(0.001, min(0.999, float(s)))
+    return max(0.01, min(0.99, float(s)))
 
 
 def build_user_prompt(observation: Dict[str, Any]) -> str:
@@ -116,7 +116,7 @@ def run_task(
     step_count = 0
     step_result: Dict[str, Any] = {}
     last_error: Optional[str] = None
-    final_score = 0.001
+    final_score = 0.01
 
     try:
         observation = post_reset(http_client, task_id)
@@ -179,7 +179,7 @@ def run_task(
         post_close(http_client)
 
         print(
-            f"[END] success={success_str} steps={step_count} score={final_score:.2f} rewards={rewards_str}",
+            f"[END] success={success_str} steps={step_count} score={final_score:.4f} rewards={rewards_str}",
             flush=True,
         )
 
