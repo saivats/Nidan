@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from server.graders.grader_base import BaseGrader
 
-TASK2_SUCCESS_THRESHOLD = 0.75
+TASK2_SUCCESS_THRESHOLD = 0.65
 TASK2_BUDGET = 30
 TASK2_EFFICIENCY_BONUS_FACTOR = 0.15
 

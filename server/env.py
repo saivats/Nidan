@@ -26,6 +26,7 @@ from server.utils.active_learning import (
     compute_binary_auc,
     compute_mean_diversity_score,
     compute_uncertainty_entropy,
+    cosine_similarity_to_set,
     per_sample_diversity,
     per_sample_uncertainty,
 )
@@ -49,7 +50,7 @@ GRADER_REGISTRY = {
 
 CANDIDATES_PER_STEP = 10
 LR_MAX_ITER = 1000
-SEED_PER_CLASS = 2
+SEED_PER_CLASS = 4
 
 # Safety clamp: strictly inside (0, 1) exclusive
 def _safe_score(s: float) -> float:
@@ -141,7 +142,16 @@ class Nidan:
         delta_auc = new_auc - old_auc
         redundancy_penalty = compute_redundancy_penalty(new_embedding, labeled_embeddings)
         rare_case_bonus = compute_rare_case_bonus(revealed_label, state.config.rare_classes)
-        step_reward_val = compute_step_reward(delta_auc, redundancy_penalty, rare_case_bonus)
+
+        if labeled_embeddings.shape[0] > 0:
+            cos_sim = cosine_similarity_to_set(new_embedding, labeled_embeddings)
+            diversity_score = float(np.clip(1.0 - cos_sim, 0.0, 1.0))
+        else:
+            diversity_score = 1.0
+
+        step_reward_val = compute_step_reward(
+            delta_auc, redundancy_penalty, rare_case_bonus, diversity_score
+        )
         state.cumulative_reward += step_reward_val
 
         self._last_annotation_result = revealed_label
@@ -240,7 +250,7 @@ class Nidan:
             return dummy
 
         model = LogisticRegression(
-            max_iter=LR_MAX_ITER, random_state=42, solver="lbfgs", C=1.0
+            max_iter=LR_MAX_ITER, random_state=42, solver="lbfgs", C=0.1
         )
         model.fit(labeled_emb, labeled_lbl)
         return model

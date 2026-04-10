@@ -4,7 +4,7 @@ __pycache__/
 *.pyd
 
 # Embeddings cache - generated at Docker build time, not for git
-server/data/embeddings_cache/
+server/data/embeddings_cache/*.pkl
 
 # Environment
 .env
