@@ -45,13 +45,13 @@ def _generate_synthetic_embeddings(
     n_classes = len(classes)
     total_size = pool_size + val_size
 
-    class_centers = rng.randn(n_classes, EMBEDDING_DIM) * 3
+    class_centers = rng.randn(n_classes, EMBEDDING_DIM) * 0.2
     all_embeddings = []
     all_labels = []
 
     for idx, (cls_name, weight) in enumerate(zip(classes, class_weights)):
         n_samples = int(total_size * weight)
-        noise = rng.randn(n_samples, EMBEDDING_DIM) * 0.8
+        noise = rng.randn(n_samples, EMBEDDING_DIM) * 5.0
         embeddings = class_centers[idx] + noise
         all_embeddings.append(embeddings)
         all_labels.extend([cls_name] * n_samples)

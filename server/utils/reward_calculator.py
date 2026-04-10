@@ -8,6 +8,7 @@ STEP_REWARD_CLIP_MAX = 0.3
 REDUNDANCY_SIMILARITY_THRESHOLD = 0.85
 REDUNDANCY_PENALTY_SCALE = 0.05
 RARE_CASE_BONUS = 0.15
+DIVERSITY_BONUS_SCALE = 0.05
 
 
 def compute_redundancy_penalty(
@@ -40,6 +41,8 @@ def compute_step_reward(
     delta_auc: float,
     redundancy_penalty: float,
     rare_case_bonus: float,
+    diversity_score: float = 0.0,
 ) -> float:
-    raw_reward = delta_auc - redundancy_penalty + rare_case_bonus
+    diversity_bonus = DIVERSITY_BONUS_SCALE * diversity_score
+    raw_reward = delta_auc + diversity_bonus - redundancy_penalty + rare_case_bonus
     return float(np.clip(raw_reward, STEP_REWARD_CLIP_MIN, STEP_REWARD_CLIP_MAX))
