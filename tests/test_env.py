@@ -110,8 +110,8 @@ class TestStep:
         initial_budget = observation.budget_remaining
         first_id = observation.candidate_images[0].image_id
         action = Action(selected_image_id=first_id)
-        new_obs, _, _, _ = env.step(action)
-        assert new_obs.budget_remaining == initial_budget - 1
+        new_obs, _, _, info = env.step(action)
+        assert new_obs.budget_remaining == initial_budget - info["annotation_cost"]
 
     def test_step_removes_image_from_pool(self, reset_task1):
         env, observation = reset_task1
@@ -160,6 +160,15 @@ class TestStep:
         action = Action(selected_image_id=first_id)
         new_obs, _, _, _ = env.step(action)
         assert len(new_obs.episode_history) == 1
+
+    def test_info_contains_new_context_fields(self, reset_task1):
+        env, observation = reset_task1
+        first_id = observation.candidate_images[0].image_id
+        action = Action(selected_image_id=first_id)
+        _, _, _, info = env.step(action)
+        assert "annotation_cost" in info
+        assert "budget_phase" in info
+        assert "class_coverage_ratio" in info
 
 
 class TestDone:
