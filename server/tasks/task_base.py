@@ -16,6 +16,9 @@ class TaskConfig:
     rare_classes: List[str]
     modality: str = "xray"
     body_part: str = "chest"
+    variable_cost: bool = False
+    base_annotation_cost: int = 1
+    rare_annotation_cost: int = 2
 
 
 @dataclass
@@ -30,9 +33,12 @@ class TaskState:
     labeled_labels: List[str] = field(default_factory=list)
     unlabeled_indices: List[int] = field(default_factory=list)
     budget_used: int = 0
+    annotation_cost_spent: int = 0
     current_auc: float = 0.5
     step_count: int = 0
     cumulative_reward: float = 0.0
+    auc_trajectory: List[float] = field(default_factory=list)
+    classes_discovered: List[str] = field(default_factory=list)
 
     def get_labeled_embeddings(self) -> np.ndarray:
         if not self.labeled_indices:
@@ -55,3 +61,31 @@ class TaskState:
             return None
         except ValueError:
             return None
+
+    def get_budget_phase(self) -> str:
+        if self.config.budget == 0:
+            return "late"
+        progress = self.budget_used / self.config.budget
+        if progress < 0.3:
+            return "early"
+        if progress < 0.7:
+            return "mid"
+        return "late"
+
+    def get_class_distribution(self) -> Dict[str, int]:
+        distribution: Dict[str, int] = {cls: 0 for cls in self.config.classes}
+        for lbl in self.labeled_labels:
+            if lbl in distribution:
+                distribution[lbl] += 1
+        return distribution
+
+    def get_class_coverage_ratio(self) -> float:
+        discovered = sum(1 for cls in self.config.classes if cls in self.classes_discovered)
+        return discovered / len(self.config.classes) if self.config.classes else 0.0
+
+    def compute_annotation_cost(self, label: str) -> int:
+        if not self.config.variable_cost:
+            return self.config.base_annotation_cost
+        if label in self.config.rare_classes:
+            return self.config.rare_annotation_cost
+        return self.config.base_annotation_cost

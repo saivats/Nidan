@@ -21,39 +21,90 @@ ENV_NAME = "nidan"
 TASK_ORDER = ["task1", "task2", "task3"]
 TASK_MAX_STEPS = {"task1": 40, "task2": 30, "task3": 15}
 
-SYSTEM_PROMPT = (
-    "You are a radiologist assistant performing active learning. You see a pool of unlabeled "
-    "medical images. Each step, select ONE image_id to annotate - the one most likely to "
-    "improve the diagnostic model. Prefer high uncertainty AND high diversity from already "
-    "labeled images. Avoid near-duplicates. Respond with ONLY the image_id string, nothing else."
+SYSTEM_PROMPT_EARLY = (
+    "You are a radiologist assistant performing active learning in the EARLY phase. "
+    "Your priority is CLASS COVERAGE — label at least one sample from every class. "
+    "Look for candidates with HIGH DIVERSITY to explore the full feature space. "
+    "Select ONE image_id from the candidates. Respond with ONLY the image_id."
 )
+
+SYSTEM_PROMPT_MID = (
+    "You are a radiologist assistant performing active learning in the MID phase. "
+    "You now have class coverage. Your priority is UNCERTAINTY REDUCTION — pick images "
+    "the model is most confused about to improve AUC. Balance uncertainty with diversity. "
+    "Avoid near-duplicates of already labeled images. "
+    "Select ONE image_id from the candidates. Respond with ONLY the image_id."
+)
+
+SYSTEM_PROMPT_LATE = (
+    "You are a radiologist assistant performing active learning in the LATE phase. "
+    "Budget is almost exhausted. Every pick counts. Target the HIGHEST UNCERTAINTY "
+    "candidate — go for the biggest AUC gain per annotation. Avoid any redundant picks. "
+    "Select ONE image_id from the candidates. Respond with ONLY the image_id."
+)
+
+PHASE_PROMPTS = {
+    "early": SYSTEM_PROMPT_EARLY,
+    "mid": SYSTEM_PROMPT_MID,
+    "late": SYSTEM_PROMPT_LATE,
+}
 
 
 def _safe_score(s: float) -> float:
     return max(0.01, min(0.99, float(s)))
 
 
+def _get_budget_phase(observation: Dict[str, Any]) -> str:
+    return observation.get("budget_phase", "mid")
+
+
 def build_user_prompt(observation: Dict[str, Any]) -> str:
+    phase = _get_budget_phase(observation)
+    class_dist = observation.get("class_distribution", {})
+    auc = observation.get("current_model_auc", 0.0)
+
     lines = [
         f"Task: {observation['task_id']}",
         f"Step: {observation['step']}",
         f"Budget remaining: {observation['budget_remaining']}",
+        f"Budget phase: {phase}",
         f"Unlabeled pool size: {observation['unlabeled_pool_size']}",
-        f"Current model AUC: {observation['current_model_auc']:.4f}",
+        f"Current model AUC: {auc:.4f}",
         f"Mean uncertainty: {observation['embedding_stats'].get('mean_uncertainty', 0.0):.4f}",
         f"Mean diversity: {observation['embedding_stats'].get('mean_diversity_score', 0.0):.4f}",
-        "",
-        "Candidate images (image_id | uncertainty | diversity):",
     ]
+
+    if class_dist:
+        lines.append(f"\nLabeled class distribution: {class_dist}")
+        missing = [cls for cls, count in class_dist.items() if count == 0]
+        if missing:
+            lines.append(f"MISSING CLASSES (priority): {missing}")
+
+    histogram = observation.get("model_confidence_histogram")
+    if histogram:
+        lines.append(f"\nModel confidence histogram: {histogram}")
+
+    lines.append("")
+    lines.append("Candidate images (image_id | uncertainty | diversity | region | priority | cost):")
     for candidate in observation.get("candidate_images", []):
         lines.append(
             f"  {candidate['image_id']} | "
-            f"uncertainty={candidate['uncertainty_score']:.4f} | "
-            f"diversity={candidate['diversity_score']:.4f}"
+            f"uncertainty={candidate.get('uncertainty_score', 0.0):.4f} | "
+            f"diversity={candidate.get('diversity_score', 0.0):.4f} | "
+            f"region={candidate.get('region_of_interest', 'general')} | "
+            f"priority={candidate.get('patient_priority', 'routine')} | "
+            f"cost={candidate.get('acquisition_cost', 1)}"
         )
 
     if observation.get("last_annotation_result"):
         lines.append(f"\nLast annotation result: {observation['last_annotation_result']}")
+
+    if phase == "early":
+        lines.append("\nSTRATEGY: Prioritize diversity and class coverage — find all classes!")
+    elif phase == "mid":
+        lines.append("\nSTRATEGY: Target high-uncertainty samples to maximize AUC gain.")
+    else:
+        lines.append("\nSTRATEGY: Budget critical! Pick only the most impactful candidate.")
 
     lines.append("\nWhich image_id should be annotated next? Reply with ONLY the image_id.")
     return "\n".join(lines)
@@ -62,24 +113,54 @@ def build_user_prompt(observation: Dict[str, Any]) -> str:
 def select_image_via_llm(
     client: OpenAI, observation: Dict[str, Any], valid_ids: List[str]
 ) -> str:
+    phase = _get_budget_phase(observation)
+    system_prompt = PHASE_PROMPTS.get(phase, SYSTEM_PROMPT_MID)
     user_prompt = build_user_prompt(observation)
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=64,
-            temperature=0.0,
-        )
-        selected = response.choices[0].message.content.strip()
-        if selected in valid_ids:
-            return selected
-    except Exception:
-        pass
 
-    return valid_ids[0] if valid_ids else ""
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=64,
+                temperature=0.0,
+            )
+            selected = response.choices[0].message.content.strip()
+            if selected in valid_ids:
+                return selected
+
+            for vid in valid_ids:
+                if vid in selected:
+                    return vid
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+            continue
+
+    return _fallback_selection(observation, valid_ids)
+
+
+def _fallback_selection(observation: Dict[str, Any], valid_ids: List[str]) -> str:
+    candidates = observation.get("candidate_images", [])
+    if not candidates:
+        return valid_ids[0] if valid_ids else ""
+
+    phase = _get_budget_phase(observation)
+
+    if phase == "early":
+        best = max(candidates, key=lambda c: c.get("diversity_score", 0.0))
+    elif phase == "late":
+        best = max(candidates, key=lambda c: c.get("uncertainty_score", 0.0))
+    else:
+        best = max(
+            candidates,
+            key=lambda c: c.get("uncertainty_score", 0.0) * 0.6 + c.get("diversity_score", 0.0) * 0.4,
+        )
+
+    return best["image_id"] if best["image_id"] in valid_ids else valid_ids[0]
 
 
 def post_reset(http_client: httpx.Client, task_id: str) -> Dict[str, Any]:

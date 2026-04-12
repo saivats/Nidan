@@ -12,4 +12,7 @@ TASK2_CONFIG = TaskConfig(
     rare_classes=["covid", "tuberculosis"],
     modality="xray",
     body_part="chest",
+    variable_cost=True,
+    base_annotation_cost=1,
+    rare_annotation_cost=2,
 )

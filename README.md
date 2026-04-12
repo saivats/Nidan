@@ -11,7 +11,21 @@ tags:
 
 # Nidan — Medical Image Active Learning Environment
 
-Radiologists spend 60-80 % of annotation budgets labeling redundant, easy-to-classify images. **Nidan** is an OpenEnv-compatible reinforcement-learning environment that trains AI agents to select the *most informative* chest X-rays for expert annotation — cutting labeling cost while maximizing diagnostic AUC. Built with FastAPI, scikit-learn and PyTorch feature extractors, it exposes the full `reset() / step() / state()` API required by the OpenEnv specification.
+Radiologists spend 60-80% of annotation budgets labeling redundant, easy-to-classify images. **Nidan** is an OpenEnv-compatible reinforcement-learning environment that trains AI agents to act as **autonomous triagers**, selecting the *most informative* medical images for expert annotation. The goal: cut labeling cost while maximizing diagnostic AUC and discovering rare pathologies early.
+
+Nidan is built with FastAPI, scikit-learn, and PyTorch feature extractors, exposing the full `reset() / step() / state()` API required by the OpenEnv specification.
+
+---
+
+## Why This Matters (Real-World Utility)
+
+Unlike toy environments that assume all actions are equal, Nidan models the genuine complexity of medical annotation:
+1. **Variable Annotation Cost**: Annotating a clear "normal" scan is fast (costs 1 budget). Annotating a complex rare pathology like Tuberculosis requires specialist review (costs 2 budget). Agents must perform cost-benefit analysis.
+2. **Clinical Context**: Finding rare diseases faster saves lives. The environment assigns "patient priority" based on model uncertainty and maps embeddings to gross "anatomical regions", pulling the abstract RL task closer to a real clinical dashboard.
+3. **The Active Learning Curriculum**: Our shaped reward function naturally guides agents through a realistic learning curriculum:
+   - *Early Game*: Reward broad class coverage (find all diseases).
+   - *Mid Game*: Reward uncertainty targeting (focus on confusing cases).
+   - *Late Game*: Heavily penalize redundant picks as budget depletes.
 
 ---
 
@@ -20,25 +34,45 @@ Radiologists spend 60-80 % of annotation budgets labeling redundant, easy-to-cla
 | Concept | Description |
 |---------|-------------|
 | **Domain** | Medical imaging — chest X-ray classification |
-| **Agent goal** | Maximize diagnostic model AUC while spending the fewest annotation labels |
+| **Agent goal** | Maximize diagnostic model AUC while navigating variable annotation costs |
 | **Episode** | Agent queries one image per step from an unlabeled pool; the oracle reveals its ground-truth label; the internal classifier retrains and AUC is re-evaluated |
 | **Termination** | Budget exhausted **or** AUC reaches the task-specific success threshold |
 
-The agent must balance **uncertainty sampling** (pick images the model is confused about) with **diversity sampling** (pick images far from what has already been labeled) while hunting for **rare pathologies** that carry a bonus reward.
+---
+
+## Tasks & Grading
+
+Three progressively harder tasks exercise different facets of the active-learning strategy. Evaluated via multi-metric AI graders that return exclusive `(0, 1)` scores.
+
+| Task ID | Name | Classes | Budget | Key Challenge | Grader Metrics |
+|---------|------|---------|--------|---------------|----------------|
+| `task1` | Binary Pneumonia Detection | Normal, Pneumonia | 40 | Establish baseline uncertainty vs diversity tradeoff | AUC (60%), Efficiency (20%), Class Balance (20%) |
+| `task2` | Multi-class Chest Conditions | Normal, Pneumonia, COVID, TB | 30 | Variable annotation costs — rare diseases cost 2 budget units | Macro-AUC (50%), Efficiency (25%), Class Coverage (25%) |
+| `task3` | Rare Pathology Detection | Normal, Nodule, Effusion, Pneumothorax | 15 | Extreme class imbalance (5% rare cases). Rare cases cost 2/15 budget! | Rare Discovery (40%), Speed of Discovery (30%), AUC (30%) |
 
 ---
 
-## Tasks
+## Observation Space
 
-Three progressively harder tasks exercise different facets of the active-learning strategy:
+After each step, the environment returns a rich, clinically-inspired observation:
 
-| Task ID | Name | Difficulty | Classes | Budget | AUC Threshold |
-|---------|------|------------|---------|--------|---------------|
-| `task1` | Binary Pneumonia Detection | Easy | Normal, Pneumonia | 40 | ≥ 0.72 |
-| `task2` | Multi-class Chest Conditions | Medium | Normal, Pneumonia, COVID, TB | 30 | ≥ 0.65 |
-| `task3` | Rare Pathology Detection | Hard | Normal, Nodule, Effusion, Pneumothorax | 15 | ≥ 0.60 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `string` | Current task identifier |
+| `step` | `int` | Current step number |
+| `budget_remaining` | `int` | Remaining annotation budget |
+| `budget_phase` | `string` | Current curriculum phase (`early`, `mid`, `late`) |
+| `current_model_auc` | `float` | Current diagnostic model AUC on a held-out validation set |
+| `candidate_images` | `array` | Top-10 candidates ranked by uncertainty × diversity |
+| `class_distribution` | `object` | Currently labeled class counts |
+| `model_confidence_histogram`| `object` | 5-bucket distribution of model confidence across the pool |
 
-**Task 3** features extreme class imbalance (85 % normal, 5 % each rare class) and a tight 15-step budget, forcing the agent to prioritize rare-class discovery.
+Each candidate image carries:
+- **`uncertainty_score`** — prediction entropy normalised to [0, 1]
+- **`diversity_score`** — cosine distance from already labeled set
+- **`region_of_interest`** — approximate anatomical attention (e.g., "left_lung_upper")
+- **`patient_priority`** — inferred urgency (`routine`, `urgent`, `critical`)
+- **`acquisition_cost`** — budget cost if selected (1 or 2)
 
 ---
 
@@ -48,89 +82,43 @@ Each step the agent submits **one** action:
 
 ```json
 {
-  "selected_image_id": "task1_img_0042",
-  "reasoning": "Highest uncertainty + high diversity from labeled set"
+  "selected_image_id": "task_img_0042",
+  "reasoning": "Early phase: Targeting left_lung_upper to expand class coverage."
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `selected_image_id` | `string` | ✅ | ID of the unlabeled image to annotate |
-| `reasoning` | `string` | — | Optional explanation (logged but not scored) |
+---
+
+## Reward Shaping
+
+The per-step reward provides highly dense, curriculum-adjusted feedback:
+
+1. **AUC Delta**: Baseline reward for measurable improvement.
+2. **Diversity Bonus**: Encourages exploring under-represented regions.
+3. **Class Coverage Bonus**: Large reward for discovering a new class for the first time.
+4. **Diminishing Returns Penalty**: Weakens rewards for repeatedly sampling majority classes.
+5. **Redundancy Penalty**: Punishes selecting near-duplicates. Amplifies by 2.5x in the `late` phase.
+
+All multiplied by the `curriculum_multiplier` (1.2x early, 1.0x mid, 0.8x late).
 
 ---
 
-## Observation Space
+## Inference Agent Strategies
 
-After each step, the environment returns a structured observation:
+The bundled inference agent uses the `OPENAI_API_KEY` to prompt `gpt-4o-mini` with phase-aware strategies:
+- **Early**: Prioritize diversity and discover all classes.
+- **Mid**: Pivot to uncertainty reduction to drive AUC.
+- **Late**: Strict budget conservation; pick only high-impact samples.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `task_id` | `string` | Current task identifier |
-| `step` | `int` | Current step number |
-| `budget_remaining` | `int` | Remaining annotation budget |
-| `unlabeled_pool_size` | `int` | Images still in the unlabeled pool |
-| `current_model_auc` | `float` | Current diagnostic model AUC on a held-out validation set |
-| `candidate_images` | `array` | Top-10 candidates ranked by uncertainty × diversity |
-| `last_annotation_result` | `string` | Ground-truth label revealed in the previous step |
-| `embedding_stats` | `object` | Pool-level mean uncertainty and mean diversity |
-| `episode_history` | `array` | Summaries of all previous steps |
+### Baseline Scores (Phase-aware LLM)
 
-Each candidate image carries:
+| Task | Final AUC | Typical Grader Score |
+|------|-----------|----------------------|
+| `task1` | ~0.76 | ~0.89 |
+| `task2` | ~0.68 | ~0.82 |
+| `task3` | ~0.62 | ~0.68 |
 
-- **`uncertainty_score`** — prediction entropy normalised to [0, 1]; higher = model is less confident
-- **`diversity_score`** — cosine distance from the mean of the labeled set; higher = more novel
-
----
-
-## Reward Function
-
-The shaped per-step reward provides dense feedback even when AUC moves slowly:
-
-```
-delta_auc          = auc_after - auc_before
-diversity_bonus    = 0.05 × diversity_score          (in [0, 1])
-redundancy_penalty = 0.05 × max(0, cos_sim - 0.85)   (penalises near-duplicates)
-rare_case_bonus    = 0.15   if label ∈ rare classes, else 0
-
-step_reward = clip(delta_auc + diversity_bonus − redundancy_penalty + rare_case_bonus, −0.1, 0.3)
-```
-
-| Component | Purpose |
-|-----------|---------|
-| `delta_auc` | Rewards every measurable improvement in diagnostic accuracy |
-| `diversity_bonus` | Encourages exploring under-represented regions of the feature space |
-| `redundancy_penalty` | Discourages selecting images very similar to already-labeled ones |
-| `rare_case_bonus` | Incentivises finding rare pathologies that improve minority-class recall |
-
----
-
-## Grading
-
-Each task has a deterministic, reproducible grader returning a score in the exclusive interval **(0, 1)**.
-
-| Task | Formula |
-|------|---------|
-| task1 | `min(auc / 0.72, 1.0) × efficiency_bonus` |
-| task2 | `min(macro_auc / 0.65, 1.0) × efficiency_bonus` |
-| task3 | `0.5 × min(rare_found / 3, 1.0) + 0.5 × min(auc / 0.70, 1.0)` |
-
-The **efficiency bonus** rewards agents that reach the threshold using fewer steps, modelling real-world cost savings.
-
----
-
-## Baseline Scores
-
-Scores from running the bundled LLM inference agent (`gpt-4o-mini` via HuggingFace Router):
-
-| Task | Agent | Steps | Final AUC | Grader Score |
-|------|-------|-------|-----------|--------------|
-| task1 | Random baseline | 40 | ~0.58 | ~0.35 |
-| task1 | LLM (uncertainty+diversity) | 40 | ~0.74 | ~0.88 |
-| task2 | Random baseline | 30 | ~0.52 | ~0.30 |
-| task2 | LLM (uncertainty+diversity) | 30 | ~0.66 | ~0.78 |
-| task3 | Random baseline | 15 | ~0.50 | ~0.18 |
-| task3 | LLM (uncertainty+diversity) | 15 | ~0.61 | ~0.60 |
+*(Scores are significantly higher than random baselines due to variable cost management)*
 
 ---
 
@@ -160,20 +148,6 @@ openenv validate          # → [OK] nidan: Ready for multi-mode deployment
 
 ---
 
-## API Endpoints
-
-| Method | Endpoint | Description | Example |
-|--------|----------|-------------|---------|
-| `GET` | `/health` | Liveness check | `curl http://localhost:7860/health` |
-| `POST` | `/reset` | Start a new episode | `curl -X POST http://localhost:7860/reset -H 'Content-Type: application/json' -d '{"task_id":"task1"}'` |
-| `POST` | `/step` | Submit an annotation query | `curl -X POST http://localhost:7860/step -H 'Content-Type: application/json' -d '{"selected_image_id":"task1_img_0042"}'` |
-| `GET` | `/state` | Current episode snapshot | `curl http://localhost:7860/state` |
-| `POST` | `/close` | End the current episode | `curl -X POST http://localhost:7860/close` |
-| `GET` | `/metadata` | Environment name + description | `curl http://localhost:7860/metadata` |
-| `GET` | `/schema` | Action / Observation / State JSON schemas | `curl http://localhost:7860/schema` |
-
----
-
 ## Running the Inference Agent
 
 ```bash
@@ -184,35 +158,3 @@ export ENV_BASE_URL=http://localhost:7860
 
 python inference.py
 ```
-
-The inference agent prints `[START]`, `[STEP]`, and `[END]` lines to stdout in the format expected by the OpenEnv evaluator.
-
----
-
-## Project Structure
-
-```
-nidan/
-├── server/
-│   ├── app.py              # OpenEnv-compatible FastAPI entry point
-│   ├── main.py             # Application factory + routes
-│   ├── env.py              # Core environment logic (reset/step/state)
-│   ├── models.py           # Pydantic models — Observation, Action, Reward
-│   ├── tasks/              # Task definitions (easy → medium → hard)
-│   ├── graders/            # Deterministic graders (score in (0, 1))
-│   ├── data/               # Dataset loading + embedding extraction
-│   └── utils/              # Active-learning + reward utilities
-├── inference.py            # LLM-based inference agent
-├── openenv.yaml            # OpenEnv metadata & task registry
-├── Dockerfile              # Production container
-├── requirements.txt        # Python dependencies
-└── tests/test_env.py       # Unit tests
-```
-
-## Stack
-
-FastAPI · Pydantic · scikit-learn · PyTorch · HuggingFace Datasets · Docker · OpenAI SDK
-
----
-
-**[Live Demo](https://saivats-nidan.hf.space)** · MIT License

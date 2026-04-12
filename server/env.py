@@ -14,6 +14,7 @@ from server.graders.grader_task3 import Task3Grader
 from server.models import (
     Action,
     CandidateImage,
+    ConfidenceHistogram,
     Observation,
     Reward,
     StepSummary,
@@ -52,9 +53,44 @@ CANDIDATES_PER_STEP = 10
 LR_MAX_ITER = 1000
 SEED_PER_CLASS = 4
 
-# Safety clamp: strictly inside (0, 1) exclusive
+ANATOMICAL_REGIONS = [
+    "left_lung_upper",
+    "left_lung_lower",
+    "right_lung_upper",
+    "right_lung_lower",
+    "cardiac_silhouette",
+    "mediastinum",
+    "costophrenic_angle",
+    "hilar_region",
+]
+
+
 def _safe_score(s: float) -> float:
     return max(0.01, min(0.99, float(s)))
+
+
+def _assign_anatomical_region(embedding: np.ndarray, seed: int = 0) -> str:
+    hash_val = int(abs(np.sum(embedding * 1000))) + seed
+    return ANATOMICAL_REGIONS[hash_val % len(ANATOMICAL_REGIONS)]
+
+
+def _assign_patient_priority(uncertainty: float) -> str:
+    if uncertainty > 0.8:
+        return "critical"
+    if uncertainty > 0.5:
+        return "urgent"
+    return "routine"
+
+
+def _compute_confidence_histogram(proba: np.ndarray) -> ConfidenceHistogram:
+    max_conf = np.max(proba, axis=1)
+    return ConfidenceHistogram(
+        very_low=int(np.sum(max_conf < 0.2)),
+        low=int(np.sum((max_conf >= 0.2) & (max_conf < 0.4))),
+        medium=int(np.sum((max_conf >= 0.4) & (max_conf < 0.6))),
+        high=int(np.sum((max_conf >= 0.6) & (max_conf < 0.8))),
+        very_high=int(np.sum(max_conf >= 0.8)),
+    )
 
 
 class Nidan:
@@ -101,9 +137,12 @@ class Nidan:
             state.unlabeled_indices.remove(idx)
             if pool_labels_arr[idx] in config.rare_classes:
                 self._rare_positives_found += 1
+            if pool_labels_arr[idx] not in state.classes_discovered:
+                state.classes_discovered.append(pool_labels_arr[idx])
 
         self._model = self._train_model(state)
         state.current_auc = self._compute_auc(state)
+        state.auc_trajectory.append(state.current_auc)
         self._state = state
 
         return self._build_observation(state)
@@ -126,11 +165,17 @@ class Nidan:
         new_embedding = state.pool_embeddings[pool_idx]
         labeled_embeddings = state.get_labeled_embeddings()
 
+        annotation_cost = state.compute_annotation_cost(revealed_label)
+
         state.labeled_indices.append(pool_idx)
         state.labeled_labels.append(revealed_label)
         state.unlabeled_indices.remove(pool_idx)
-        state.budget_used += 1
+        state.budget_used += annotation_cost
+        state.annotation_cost_spent += annotation_cost
         state.step_count += 1
+
+        if revealed_label not in state.classes_discovered:
+            state.classes_discovered.append(revealed_label)
 
         if revealed_label in state.config.rare_classes:
             self._rare_positives_found += 1
@@ -138,6 +183,7 @@ class Nidan:
         self._model = self._train_model(state)
         new_auc = self._compute_auc(state)
         state.current_auc = new_auc
+        state.auc_trajectory.append(new_auc)
 
         delta_auc = new_auc - old_auc
         redundancy_penalty = compute_redundancy_penalty(new_embedding, labeled_embeddings)
@@ -149,9 +195,22 @@ class Nidan:
         else:
             diversity_score = 1.0
 
-        step_reward_val = compute_step_reward(
-            delta_auc, redundancy_penalty, rare_case_bonus, diversity_score
+        label_distribution = state.get_class_distribution()
+
+        reward_components = compute_step_reward(
+            delta_auc=delta_auc,
+            redundancy_penalty=redundancy_penalty,
+            rare_case_bonus=rare_case_bonus,
+            diversity_score=diversity_score,
+            budget_used=state.budget_used,
+            total_budget=state.config.budget,
+            revealed_label=revealed_label,
+            classes_discovered=state.classes_discovered,
+            all_classes=state.config.classes,
+            label_distribution=label_distribution,
         )
+
+        step_reward_val = reward_components["step_reward"]
         state.cumulative_reward += step_reward_val
 
         self._last_annotation_result = revealed_label
@@ -173,13 +232,13 @@ class Nidan:
             delta_auc=delta_auc,
             redundancy_penalty=redundancy_penalty,
             rare_case_bonus=rare_case_bonus,
+            diversity_bonus=reward_components["diversity_bonus"],
+            class_coverage_bonus=reward_components["class_coverage_bonus"],
+            curriculum_multiplier=reward_components["curriculum_multiplier"],
             step_reward=step_reward_val,
             cumulative_auc=new_auc,
         )
 
-        # ALWAYS compute and include final_score in every step's info,
-        # not just when done=True. The validator reads this field from
-        # every step response and rejects 0.0 or 1.0.
         final_state_dict = self.state()
         final_state_dict["rare_positives_found"] = self._rare_positives_found
         grader = GRADER_REGISTRY[state.config.task_id]
@@ -187,11 +246,15 @@ class Nidan:
 
         info: Dict[str, Any] = {
             "revealed_label": revealed_label,
+            "annotation_cost": annotation_cost,
             "budget_used": state.budget_used,
-            "budget_remaining": state.config.budget - state.budget_used,
+            "budget_remaining": max(0, state.config.budget - state.budget_used),
             "rare_positives_found": self._rare_positives_found,
             "success_threshold": state.config.success_threshold,
-            "final_score": final_score,  # always present, always strictly in (0,1)
+            "final_score": final_score,
+            "budget_phase": state.get_budget_phase(),
+            "class_coverage_ratio": state.get_class_coverage_ratio(),
+            "auc_trajectory": [float(a) for a in state.auc_trajectory],
             "done_reason": (
                 "budget_exhausted" if budget_exhausted
                 else ("auc_threshold_reached" if auc_reached else "in_progress")
@@ -211,14 +274,18 @@ class Nidan:
             "task_name": s.config.name,
             "step": s.step_count,
             "budget_used": s.budget_used,
-            "budget_remaining": s.config.budget - s.budget_used,
+            "budget_remaining": max(0, s.config.budget - s.budget_used),
+            "annotation_cost_spent": s.annotation_cost_spent,
             "current_auc": float(s.current_auc),
             "labeled_set_size": len(s.labeled_indices),
             "unlabeled_pool_size": len(s.unlabeled_indices),
-            "label_distribution": self._get_label_distribution(s),
+            "label_distribution": s.get_class_distribution(),
+            "class_coverage_ratio": s.get_class_coverage_ratio(),
             "rare_positives_found": self._rare_positives_found,
             "success_threshold": s.config.success_threshold,
             "cumulative_reward": float(s.cumulative_reward),
+            "budget_phase": s.get_budget_phase(),
+            "auc_trajectory": [float(a) for a in s.auc_trajectory],
             "episode_history": [h.model_dump() for h in self._episode_history],
         }
 
@@ -274,6 +341,8 @@ class Nidan:
         labeled_emb = state.get_labeled_embeddings()
         unlabeled_ids = state.get_unlabeled_image_ids()
 
+        confidence_histogram = None
+
         if unlabeled_emb.shape[0] == 0:
             candidates: List[CandidateImage] = []
             embedding_stats = {"mean_uncertainty": 0.0, "mean_diversity_score": 0.0}
@@ -282,6 +351,7 @@ class Nidan:
                 try:
                     proba = self._model.predict_proba(unlabeled_emb)
                     uncertainty_scores = per_sample_uncertainty(proba)
+                    confidence_histogram = _compute_confidence_histogram(proba)
                 except Exception:
                     uncertainty_scores = np.ones(unlabeled_emb.shape[0]) * 0.5
             else:
@@ -312,6 +382,15 @@ class Nidan:
                     diversity_score=float(diversity_scores[i]),
                     modality=state.config.modality,
                     body_part=state.config.body_part,
+                    region_of_interest=_assign_anatomical_region(
+                        unlabeled_emb[i], seed=i
+                    ),
+                    acquisition_cost=state.config.rare_annotation_cost
+                    if float(uncertainty_scores[i]) > 0.7 and state.config.variable_cost
+                    else state.config.base_annotation_cost,
+                    patient_priority=_assign_patient_priority(
+                        float(uncertainty_scores[i])
+                    ),
                 )
                 for i in selected_indices
             ]
@@ -326,18 +405,15 @@ class Nidan:
         return Observation(
             task_id=state.config.task_id,
             step=state.step_count,
-            budget_remaining=state.config.budget - state.budget_used,
+            budget_remaining=max(0, state.config.budget - state.budget_used),
             unlabeled_pool_size=len(state.unlabeled_indices),
             current_model_auc=float(state.current_auc),
             candidate_images=candidates,
             last_annotation_result=self._last_annotation_result,
             embedding_stats=embedding_stats,
             episode_history=list(self._episode_history),
+            class_distribution=state.get_class_distribution(),
+            model_confidence_histogram=confidence_histogram,
+            budget_phase=state.get_budget_phase(),
+            annotation_cost_spent=state.annotation_cost_spent,
         )
-
-    def _get_label_distribution(self, state: TaskState) -> Dict[str, int]:
-        distribution: Dict[str, int] = {cls: 0 for cls in state.config.classes}
-        for lbl in state.labeled_labels:
-            if lbl in distribution:
-                distribution[lbl] += 1
-        return distribution
